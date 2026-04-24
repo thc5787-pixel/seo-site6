@@ -168,7 +168,7 @@ function parseRSSItems(xml, limit = 8) {
   return items;
 }
 
-// ── News History Storage (keep 7 days) ──────────────────────
+// ── News History Storage (keep 3 days) ──────────────────────
 const newsHistory = {
   // Format: { [sport]: [{ timestamp: number, items: [...] }, ...] }
   cricket: [],
@@ -190,10 +190,10 @@ function addToHistory(sport, items) {
   // Add to front (most recent first)
   newsHistory[sport.toLowerCase()].unshift(historyEntry);
   
-  // Keep only last 7 days of history
-  const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
+  // Keep only last 3 days of history
+  const threeDaysAgo = now - (3 * 24 * 60 * 60 * 1000);
   newsHistory[sport.toLowerCase()] = newsHistory[sport.toLowerCase()].filter(
-    entry => entry.timestamp >= sevenDaysAgo
+    entry => entry.timestamp >= threeDaysAgo
   );
 }
 
@@ -203,12 +203,12 @@ function getHistory(sport, limit = 20) {
   return newsHistory[sportKey].slice(0, limit);
 }
 
-// Cache news for 6 hours
+// Cache news for 3 hours
 let newsCache = { data: null, ts: 0 };
 
 async function getNews() {
   const now = Date.now();
-  if (newsCache.data && now - newsCache.ts < 6 * 60 * 60 * 1000) {
+  if (newsCache.data && now - newsCache.ts < 3 * 60 * 60 * 1000) {
     // Return cached data, but log cache hit
     const ageMinutes = Math.round((now - newsCache.ts) / (1000 * 60));
     if (ageMinutes > 60) { // Only log if cache is older than 1 hour
@@ -225,7 +225,7 @@ async function getNews() {
       try {
         console.log(`[News] Fetching ${src.sport} from ${src.url}`);
         const xml = await fetchRSS(src.url);
-        const items = parseRSSItems(xml, 8);
+        const items = parseRSSItems(xml, 16);
         
         if (items.length > 0) {
           console.log(`[News] ✓ ${src.sport}: ${items.length} articles`);
@@ -252,8 +252,52 @@ async function getNews() {
 }
 
 app.use(compression());
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'"],
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", "https:", "data:"],
+      connectSrc:  ["'self'"],
+      frameSrc:    ["'none'"],
+      objectSrc:   ["'none'"],
+      baseUri:     ["'self'"],
+      formAction:  ["'self'"],
+    }
+  }
+}));
 app.use(express.json());
+
+// ── Static Assets ─────────────────────────────────────────
+app.get('/static/style.css', (req, res) => {
+  res.setHeader('Content-Type', 'text/css');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.send(globalCSS);
+});
+
+app.get('/static/app.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.send(`var _cur=0,_total=4,_timer;
+function goSlide(n){_cur=(n+_total)%_total;document.getElementById('carouselTrack').style.transform='translateX(-'+(_cur*100)+'%)';document.querySelectorAll('.dot').forEach(function(d,i){d.classList.toggle('active',i===_cur);});clearInterval(_timer);_timer=setInterval(function(){goSlide(_cur+1);},5000);}
+function shiftSlide(d){goSlide(_cur+d);}
+function toggleMore(id,btn){var el=document.getElementById(id);var open=el.classList.toggle('open');btn.textContent=open?'LESS ▴':'MORE ▾';}
+_timer=setInterval(function(){goSlide(_cur+1);},5000);`);
+});
+
+app.get('/og-image.svg', (req, res) => {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(`<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#581c87"/><stop offset="50%" stop-color="#9333ea"/><stop offset="100%" stop-color="#831843"/></linearGradient></defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <text x="600" y="265" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="100" font-weight="800" fill="white" text-anchor="middle">Y-games</text>
+  <text x="600" y="360" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="42" fill="rgba(255,255,255,0.85)" text-anchor="middle">Sports Betting · Live Casino · Slots</text>
+  <text x="600" y="430" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="28" fill="rgba(255,255,255,0.6)" text-anchor="middle">Fast payouts · 24/7 support</text>
+</svg>`);
+});
 
 // ── Admin API: Manual News Refresh ───────────────────────
 const lastForceUpdate = { ts: 0 };
@@ -266,8 +310,7 @@ app.get('/admin/news/refresh', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     return res.status(401).json({
       success: false,
-      message: 'Unauthorized. Provide ?key=... in query string.',
-      hint: 'Current key (dev): dev-local-2026'
+      message: 'Unauthorized.'
     });
   }
   
@@ -366,7 +409,7 @@ app.get('/api/news/force-update', async (req, res) => {
 app.get('/api/news/status', async (req, res) => {
   const now = Date.now();
   const cacheAge = newsCache.ts ? Math.round((now - newsCache.ts) / 1000) : null;
-  const isCacheValid = newsCache.ts && now - newsCache.ts < 6 * 60 * 60 * 1000;
+  const isCacheValid = newsCache.ts && now - newsCache.ts < 3 * 60 * 60 * 1000;
   
   // Calculate source stats
   const sourceStats = NEWS_SOURCES.map(src => {
@@ -389,13 +432,12 @@ app.get('/api/news/status', async (req, res) => {
       cacheAgeHuman: cacheAge ? `${Math.floor(cacheAge / 60)}m ${cacheAge % 60}s` : 'Never',
       cacheValid: isCacheValid,
       cacheTimestamp: newsCache.ts ? new Date(newsCache.ts).toISOString() : null,
-      nextFetchIn: isCacheValid ? Math.round((6 * 60 * 60 * 1000 - (now - newsCache.ts)) / 1000 / 60) : 0,
+      nextFetchIn: isCacheValid ? Math.round((3 * 60 * 60 * 1000 - (now - newsCache.ts)) / 1000 / 60) : 0,
       totalHistoryEntries: Object.values(newsHistory).reduce((sum, arr) => sum + arr.length, 0)
     },
     sources: sourceStats,
     endpoints: {
       forceUpdate: '/api/news/force-update',
-      adminRefresh: '/admin/news/refresh?key=dev-local-2026',
       history: '/news-history',
       historyJson: '/news-history?sport=cricket&format=json'
     }
@@ -429,8 +471,8 @@ app.use((req, res, next) => {
 // ── Page Data ────────────────────────────────────────────
 const pages = {
   '/': {
-    title: `${BRAND_NAME} | Home`,
-    description: 'Live sports betting insights, casino guides, slots highlights, affiliate resources, and curated sports news on one fast-loading page.',
+    title: `${BRAND_NAME} | Sports Betting, Live Casino & Slots Online`,
+    description: 'Bet on cricket, football & basketball, play live casino tables, spin slots and win lottery jackpots — all on Y-games with fast payouts and 24/7 support.',
     keywords: 'sports betting, casino games, slots, affiliate marketing, sports news',
     h1: 'Your Ultimate Gaming Destination',
     badge: '🏆 Y-games',
@@ -471,6 +513,29 @@ const pages = {
         </div>
       </div>
 
+      <div class="section-divider">
+        <h2 class="section-title">❓ Frequently Asked Questions</h2>
+        <p class="section-sub">Everything you need to know about Y-games.</p>
+      </div>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>What sports can I bet on at Y-games?</summary>
+          <p>Y-games offers live betting on cricket, football, and basketball, with real-time odds and match previews across all major leagues and tournaments.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is Y-games available on mobile?</summary>
+          <p>Yes. The Y-games app is available for both iOS and Android, giving you full access to sports betting, live casino, and slots from your phone or tablet, anytime anywhere.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What casino games does Y-games offer?</summary>
+          <p>Y-games features live dealer tables for Blackjack, Roulette, and Baccarat streamed 24/7, plus hundreds of slot titles including classic reels, video slots, and progressive jackpots.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How do I join the Y-games affiliate program?</summary>
+          <p>Register for the Y-games affiliate program, receive your unique tracking link, and start earning competitive commissions for every player you refer to the platform.</p>
+        </details>
+      </div>
+
       {{NEWS_SECTION}}
     `,
     schema: [
@@ -488,8 +553,34 @@ const pages = {
         url: '/',
         logo: 'https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=512&q=80',
         sameAs: [
-          'https://x.com/ygames888?s=21',
-          'https://www.instagram.com/ygamesofficial?igsh=MWx6ODRhdml6MXBo&utm_source=qr'
+          'https://x.com/ygames888',
+          'https://www.instagram.com/ygamesofficial'
+        ]
+      },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: [
+          {
+            '@type': 'Question',
+            name: 'What sports can I bet on at Y-games?',
+            acceptedAnswer: { '@type': 'Answer', text: 'Y-games offers live betting on cricket, football, and basketball, with real-time odds and match previews across all major leagues and tournaments.' }
+          },
+          {
+            '@type': 'Question',
+            name: 'Is Y-games available on mobile?',
+            acceptedAnswer: { '@type': 'Answer', text: 'Yes. The Y-games app is available for both iOS and Android, giving you full access to sports betting, live casino, and slots from your phone or tablet, anytime anywhere.' }
+          },
+          {
+            '@type': 'Question',
+            name: 'What casino games does Y-games offer?',
+            acceptedAnswer: { '@type': 'Answer', text: 'Y-games features live dealer tables for Blackjack, Roulette, and Baccarat streamed 24/7, plus hundreds of slot titles including classic reels, video slots, and progressive jackpots.' }
+          },
+          {
+            '@type': 'Question',
+            name: 'How do I join the Y-games affiliate program?',
+            acceptedAnswer: { '@type': 'Answer', text: 'Register for the Y-games affiliate program, receive your unique tracking link, and start earning competitive commissions for every player you refer to the platform.' }
+          }
         ]
       }
     ]
@@ -710,7 +801,8 @@ const globalCSS = `
   }
 
   .hero-desc {
-    font-size: 1.05rem;
+    font-size: 1.25rem;
+    font-weight: 700;
     color: var(--text2);
     max-width: 560px;
     margin: 0 auto 2rem;
@@ -1153,6 +1245,52 @@ const globalCSS = `
   .not-found h1 { font-size: 1.5rem; color: var(--text); }
   .not-found p { color: var(--text2); }
 
+  /* ── FAQ ── */
+  .faq-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 2rem; }
+
+  .faq-item {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .faq-item:hover { border-color: var(--accent); }
+
+  .faq-item summary {
+    padding: 1rem 1.4rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+    gap: 1rem;
+  }
+
+  .faq-item summary::-webkit-details-marker { display: none; }
+
+  .faq-item summary::after {
+    content: '+';
+    font-size: 1.2rem;
+    color: var(--accent);
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .faq-item[open] summary::after { content: '−'; }
+
+  .faq-item > p {
+    padding: 0 1.4rem 1rem;
+    font-size: 0.9rem;
+    color: var(--text2);
+    line-height: 1.6;
+  }
+
   @media (max-width: 640px) {
     header { padding: 0 1rem; }
     .page-hero { padding: 2.5rem 1rem 2rem; }
@@ -1170,11 +1308,19 @@ function renderPage(pagePath, req) {
 
   const baseUrl = `${req.protocol}://${req.get('host')}`;
   const canonicalUrl = `${baseUrl}${pagePath}`;
-  const socialImageUrl = page.socialImage || `${baseUrl}/social-share.jpg`;
+  const ogImageUrl = `${baseUrl}/og-image.svg`;
+  const twitterImageUrl = page.socialImage || `${baseUrl}/social-share.jpg`;
   const schemaData = [
     ...(Array.isArray(page.schema) ? page.schema : [page.schema]).map((entry) => {
       const normalized = { ...entry };
       if (normalized.url === '/') normalized.url = canonicalUrl;
+      if (normalized['@type'] === 'WebSite') {
+        normalized.potentialAction = {
+          '@type': 'SearchAction',
+          target: { '@type': 'EntryPoint', urlTemplate: `${baseUrl}/?q={search_term_string}` },
+          'query-input': 'required name=search_term_string'
+        };
+      }
       return normalized;
     }),
     {
@@ -1195,10 +1341,10 @@ function renderPage(pagePath, req) {
     <a href="/" class="nav-logo-link${pagePath === '/' ? ' active' : ''}">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="nav-icon" aria-label="Home"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
     </a>
-    <a href="https://x.com/ygames888?s=21" class="nav-social" aria-label="X (Twitter)" target="_blank" rel="noopener noreferrer">
+    <a href="https://x.com/ygames888" class="nav-social" aria-label="X (Twitter)" target="_blank" rel="noopener noreferrer">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.737-8.835L1.254 2.25H8.08l4.253 5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
     </a>
-    <a href="https://www.instagram.com/ygamesofficial?igsh=MWx6ODRhdml6MXBo&utm_source=qr" class="nav-social" aria-label="Instagram" target="_blank" rel="noopener noreferrer">
+    <a href="https://www.instagram.com/ygamesofficial" class="nav-social" aria-label="Instagram" target="_blank" rel="noopener noreferrer">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
     </a>`;
 
@@ -1225,7 +1371,7 @@ function renderPage(pagePath, req) {
   <meta property="og:title" content="${page.title}">
   <meta property="og:description" content="${page.description}">
   <meta property="og:url" content="${canonicalUrl}">
-  <meta property="og:image" content="${socialImageUrl}">
+  <meta property="og:image" content="${ogImageUrl}">
   <meta property="og:image:alt" content="${page.title}">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -1233,16 +1379,19 @@ function renderPage(pagePath, req) {
   <meta property="og:site_name" content="${BRAND_NAME}">
 
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@ygames888">
+  <meta name="twitter:creator" content="@ygames888">
   <meta name="twitter:title" content="${page.title}">
   <meta name="twitter:description" content="${page.description}">
-  <meta name="twitter:image" content="${socialImageUrl}">
+  <meta name="twitter:image" content="${twitterImageUrl}">
   <meta name="twitter:image:alt" content="${page.title}">
 
   <script type="application/ld+json">
   ${JSON.stringify(schemaData, null, 2)}
   </script>
 
-  <style>${globalCSS}</style>
+  <link rel="preload" href="/static/style.css" as="style">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
@@ -1311,17 +1460,7 @@ function renderPage(pagePath, req) {
   <button class="carousel-arrow next" onclick="shiftSlide(1)" aria-label="Next">&#8250;</button>
 </div>
 
-<script>
-  var _cur = 0, _total = 4, _timer;
-  function goSlide(n) {
-    _cur = (n + _total) % _total;
-    document.getElementById('carouselTrack').style.transform = 'translateX(-' + (_cur * 100) + '%)';
-    document.querySelectorAll('.dot').forEach(function(d, i){ d.classList.toggle('active', i === _cur); });
-    clearInterval(_timer); _timer = setInterval(function(){ goSlide(_cur + 1); }, 5000);
-  }
-  function shiftSlide(d){ goSlide(_cur + d); }
-  _timer = setInterval(function(){ goSlide(_cur + 1); }, 5000);
-</script>
+<script src="/static/app.js" defer></script>
 
 <main>
   ${page.content}
@@ -1361,22 +1500,25 @@ function buildNewsSection(newsSports) {
           ${img}
           <div class="nc-body">
             <div class="nc-meta"><span class="blog-tag">${sport}</span>${date ? `<time>${date}</time>` : ''}</div>
-            <h3><a href="${item.link}" target="_blank" rel="noopener noreferrer">${item.title}</a></h3>
+            <h3><a href="${item.link}" target="_blank" rel="noopener noreferrer nofollow">${item.title}</a></h3>
             <p>${item.desc.slice(0, 100)}${item.desc.length > 100 ? '…' : ''}</p>
-            <a href="${item.link}" target="_blank" rel="noopener noreferrer" class="nc-source">${sourceLabel} ↗</a>
+            <a href="${item.link}" target="_blank" rel="noopener noreferrer nofollow" class="nc-source">${sourceLabel} ↗</a>
           </div>
         </article>`;
     };
 
-    const displayCards = items.slice(0, 8).map(makeCard).join('');
-    // History placeholder - future: add "View past week" link
-    const historyLink = `<!-- 历史记录功能开发中 -->`;
+    const firstCards = items.slice(0, 4).map(makeCard).join('');
+    const moreItems = items.slice(4, 8);
+    const moreId = `more-${sport.toLowerCase().replace(/[\s()]/g, '-')}`;
 
     return `
       <div class="news-sport-block">
-        <div class="sport-header">${tag} ${sport} <a href="/news-history?sport=${sport.toLowerCase()}" style="font-size: 0.7rem; color: var(--text3); margin-left: 0.5rem; text-decoration: none;" title="View past week history">📜 History</a></div>
-        <div class="news-scroll-track">${displayCards}</div>
-        ${historyLink}
+        <div class="sport-header">${tag} ${sport} <a href="/news-history?sport=${sport.toLowerCase()}" rel="nofollow" style="font-size: 0.7rem; color: var(--text3); margin-left: 0.5rem; text-decoration: none;" title="View history">📜 History</a></div>
+        <div class="news-scroll-track">${firstCards}</div>
+        ${moreItems.length ? `
+          <div class="more-cards" id="${moreId}">${moreItems.map(makeCard).join('')}</div>
+          <button class="more-btn" onclick="toggleMore('${moreId}', this)">MORE ▾</button>
+        ` : ''}
       </div>`;
   }).join('');
 
@@ -1385,14 +1527,7 @@ function buildNewsSection(newsSports) {
       <h2 class="section-title">📰 News</h2>
       <p class="section-sub">Live sports headlines from BBC Sport — Cricket, Football &amp; Basketball.</p>
     </div>
-    ${sections}
-    <script>
-      function toggleMore(id, btn) {
-        var el = document.getElementById(id);
-        var open = el.classList.toggle('open');
-        btn.textContent = open ? 'LESS ▴' : 'MORE ▾';
-      }
-    </script>`;
+    ${sections}`;
 }
 
 // ── Routes ────────────────────────────────────────────────
@@ -1449,6 +1584,7 @@ app.get('/robots.txt', (req, res) => {
   res.send(`User-agent: *
 Allow: /
 Disallow: /admin/
+Disallow: /api/
 Disallow: /private/
 Crawl-delay: 5
 Host: ${req.get('host')}
@@ -1509,41 +1645,69 @@ app.get('/news-history', (req, res) => {
       </div>`;
     }
 
-    return entries.map((entry, idx) => {
-      const date = new Date(entry.timestamp);
-      const dateStr = date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-      const isLatest = idx === 0;
-
-      const cards = entry.items.map(item => {
-        const pubDate = item.pub ? new Date(item.pub).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
-        const img = item.thumb
-          ? `<div class="nc-img"><img src="${item.thumb}" alt="${item.title.replace(/"/g,'')}" loading="lazy" decoding="async" width="240" height="130"></div>`
-          : `<div class="nc-img nc-img-placeholder">${meta.tag}</div>`;
-        const sourceLabel = meta.label.includes('TOI') ? 'Times of India' : 'BBC Sport';
-        return `
-          <article class="news-card">
-            ${img}
-            <div class="nc-body">
-              <div class="nc-meta"><span class="blog-tag">${meta.label}</span>${pubDate ? `<time>${pubDate}</time>` : ''}</div>
-              <h3><a href="${item.link}" target="_blank" rel="noopener noreferrer">${item.title}</a></h3>
-              <p>${(item.desc||'').slice(0,100)}${(item.desc||'').length>100?'…':''}</p>
-              <a href="${item.link}" target="_blank" rel="noopener noreferrer" class="nc-source">${sourceLabel} ↗</a>
-            </div>
-          </article>`;
-      }).join('');
-
+    const makeCard = (item) => {
+      const pubDate = item.pub ? new Date(item.pub).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+      const img = item.thumb
+        ? `<div class="nc-img"><img src="${item.thumb}" alt="${item.title.replace(/"/g,'')}" loading="lazy" decoding="async" width="240" height="130"></div>`
+        : `<div class="nc-img nc-img-placeholder">${meta.tag}</div>`;
+      const sourceLabel = meta.label.includes('TOI') ? 'Times of India' : 'BBC Sport';
       return `
-        <div class="hist-batch">
-          <div class="hist-batch-header">
-            <span class="hist-badge${isLatest ? ' latest' : ''}">
-              ${isLatest ? '🔴 Latest' : `#${idx + 1}`}
-            </span>
-            <span class="hist-date">🕐 ${dateStr}</span>
-            <span class="hist-items-count">${entry.items.length} articles</span>
+        <article class="news-card">
+          ${img}
+          <div class="nc-body">
+            <div class="nc-meta"><span class="blog-tag">${meta.label}</span>${pubDate ? `<time>${pubDate}</time>` : ''}</div>
+            <h3><a href="${item.link}" target="_blank" rel="noopener noreferrer nofollow">${item.title}</a></h3>
+            <p>${(item.desc||'').slice(0,100)}${(item.desc||'').length>100?'…':''}</p>
+            <a href="${item.link}" target="_blank" rel="noopener noreferrer nofollow" class="nc-source">${sourceLabel} ↗</a>
           </div>
-          <div class="news-scroll-track">${cards}</div>
-        </div>`;
+        </article>`;
+    };
+
+    // ── Latest block: entries[0] split into 2 rows of 8 ──────
+    const latestEntry = entries[0];
+    const latestDate = new Date(latestEntry.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const latestTotal = Math.min(latestEntry.items.length, 16);
+    const latestRow1 = latestEntry.items.slice(0, 8).map(makeCard).join('');
+    const latestRow2 = latestEntry.items.slice(8, 16).map(makeCard).join('');
+
+    const latestBlock = `
+      <div class="hist-batch hist-batch-latest">
+        <div class="hist-latest-header">
+          <span class="hist-badge latest">🔴 Latest</span>
+          <span class="hist-date">🕐 ${latestDate}</span>
+          <span class="hist-items-count">${latestTotal} articles</span>
+        </div>
+        <div class="hist-row"><div class="news-scroll-track">${latestRow1}</div></div>
+        ${latestRow2 ? `<div class="hist-row-divider"></div><div class="hist-row"><div class="news-scroll-track">${latestRow2}</div></div>` : ''}
+      </div>`;
+
+    // ── Historical: entries[1..n] in pairs, 2 rows each ────
+    const histEntries = entries.slice(1);
+    const groups = [];
+    for (let i = 0; i < histEntries.length; i += 2) {
+      groups.push(histEntries.slice(i, i + 2));
+    }
+
+    const histBlocks = groups.map((group, gi) => {
+      const rows = group.map((entry, ri) => {
+        const date = new Date(entry.timestamp);
+        const dateStr = date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const serialNo = gi * 2 + ri + 2;
+        const cards = entry.items.slice(0, 8).map(makeCard).join('');
+        return `
+          <div class="hist-row">
+            <div class="hist-row-label">
+              <span class="hist-badge">#${serialNo}</span>
+              <span class="hist-date">🕐 ${dateStr}</span>
+              <span class="hist-items-count">${entry.items.length} articles</span>
+            </div>
+            <div class="news-scroll-track">${cards}</div>
+          </div>`;
+      }).join('');
+      return `<div class="hist-batch">${rows}</div>`;
     }).join('');
+
+    return latestBlock + histBlocks;
   };
 
   const historyHTML = buildHistoryCards(history);
@@ -1575,9 +1739,14 @@ app.get('/news-history', (req, res) => {
     .hist-tab:hover { border-color: var(--accent); color: var(--accent); }
     .hist-tab.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: white; border-color: var(--accent); }
     .hist-count { background: rgba(255,255,255,0.15); border-radius: 20px; padding: 0.1rem 0.5rem; font-size: 0.75rem; }
-    /* Batch */
-    .hist-batch { margin-bottom: 2.5rem; }
-    .hist-batch-header { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+    /* Batch — wraps 2 rows */
+    .hist-batch { margin-bottom: 2rem; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.2rem 1.4rem; }
+    .hist-batch-latest { border-color: rgba(239,68,68,0.35); }
+    .hist-latest-header { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+    .hist-row { margin-bottom: 1rem; }
+    .hist-row:last-child { margin-bottom: 0; }
+    .hist-row-label { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+    .hist-row-divider { border: none; border-top: 1px solid var(--border); margin: 0.8rem 0; }
     .hist-badge { font-size: 0.78rem; font-weight: 700; padding: 0.25rem 0.7rem; border-radius: 20px; background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
     .hist-badge.latest { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.4); color: #fca5a5; }
     .hist-date { font-size: 0.82rem; color: var(--text3); }
@@ -1622,7 +1791,7 @@ app.get('/news-history', (req, res) => {
 </header>
 <main>
   <h1 class="page-title">📜 News History</h1>
-  <p class="page-sub">News records from the past 7 days · Updated every 6 hours · Records older than 7 days are automatically removed</p>
+  <p class="page-sub">News records from the past 3 days · Updated every 3 hours · Records older than 3 days are automatically removed</p>
 
   <div class="hist-tabs">${tabs}</div>
 
@@ -1692,7 +1861,7 @@ function startServer() {
     setInterval(() => {
       newsCache = { data: null, ts: 0 }; // 清除旧缓存
       getNews().then(() => console.log('[Auto] News cache refreshed'));
-    }, 6 * 60 * 60 * 1000);
+    }, 3 * 60 * 60 * 1000);
   });
 }
 
